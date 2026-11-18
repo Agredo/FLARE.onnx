@@ -12,6 +12,8 @@ import traceback
 from pathlib import Path
 
 import onnx
+import numpy as np
+from onnx import helper, numpy_helper
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "flare.onnx"
@@ -112,10 +114,63 @@ def _load_weight_only_quantizer():
     raise ImportError("no MatMul weight-only quantizer found in onnxruntime; tried " + ", ".join(attempts))
 
 
+def _rewrite_gemm_to_matmul(model) -> int:
+    """Express alpha=1/beta=1 Gemm nodes as MatMul, so weight-only quantization can see them.
+
+    The quantizer only targets MatMul, while PyTorch exports most linear layers as Gemm. The weight
+    initializer is transposed here instead of inserting a Transpose node, which keeps the
+    MatMul-with-constant-RHS pattern intact.
+    """
+    graph = model.graph
+    initializers = {initializer.name: initializer for initializer in graph.initializer}
+    replacements = []
+    added = []
+    rewritten = 0
+
+    for node in graph.node:
+        if node.op_type != "Gemm" or len(node.input) < 2:
+            continue
+        attributes = {attribute.name: helper.get_attribute_value(attribute) for attribute in node.attribute}
+        weight = initializers.get(node.input[1])
+        if (
+            weight is None
+            or attributes.get("transA", 0)
+            or attributes.get("alpha", 1.0) != 1.0
+            or attributes.get("beta", 1.0) != 1.0
+        ):
+            continue
+        array = numpy_helper.to_array(weight)
+        if array.ndim != 2:
+            continue
+        if attributes.get("transB", 0):
+            array = array.T
+
+        name = f"{node.input[1]}_matmul{rewritten}"
+        added.append(numpy_helper.from_array(np.ascontiguousarray(array), name))
+        bias = node.input[2] if len(node.input) > 2 and node.input[2] else None
+        if bias is None:
+            replacements.append(helper.make_node("MatMul", [node.input[0], name], [node.output[0]], name=node.name))
+        else:
+            intermediate = f"{node.output[0]}_matmul"
+            replacements.append(
+                helper.make_node("MatMul", [node.input[0], name], [intermediate], name=f"{node.name}_matmul")
+            )
+            replacements.append(helper.make_node("Add", [intermediate, bias], [node.output[0]], name=node.name))
+        rewritten += 1
+
+    if rewritten:
+        del graph.node[:]
+        graph.node.extend(replacements)
+        graph.initializer.extend(added)
+    return rewritten
+
+
 def quantize_int4(destination: Path, block_size: int) -> str:
     quantizer_class, fully_qualified = _load_weight_only_quantizer()
 
     model = onnx.load(str(SOURCE))
+    rewritten = _rewrite_gemm_to_matmul(model)
+    print(f"  rewrote {rewritten} Gemm node(s) to MatMul for weight-only quantization")
     supported = inspect.signature(quantizer_class.__init__).parameters
     kwargs = {"bits": 4, "block_size": block_size, "is_symmetric": True, "nodes_to_exclude": []}
     quantizer = quantizer_class(model, **{k: v for k, v in kwargs.items() if k in supported})
@@ -136,7 +191,10 @@ def quantize_int4(destination: Path, block_size: int) -> str:
         raise RuntimeError("Could not obtain a quantized ModelProto")
 
     onnx.save(proto, str(destination))
-    return f"{fully_qualified.rsplit('.', 1)[-1]}(bits=4, block_size={block_size}, is_symmetric=True)"
+    return (
+        f"{fully_qualified.rsplit('.', 1)[-1]}(bits=4, block_size={block_size}, is_symmetric=True), "
+        f"after rewriting {rewritten} Gemm node(s) to MatMul"
+    )
 
 
 BUILDERS = {"fp16": quantize_fp16, "int8": quantize_int8, "int4": quantize_int4}
