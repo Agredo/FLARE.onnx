@@ -132,21 +132,23 @@ accuracy, and execution-provider-specific behavior is not covered.
 
 ## Model size and quantization
 
-The published artifact is unquantized `float32`: 6,928,896 parameters at 4 bytes each, no quantization
-operators in the graph, ~27.7 MB. If GitHub reports 133 bytes for `flare.onnx`, it is showing the Git LFS
-pointer file; the payload is stored in LFS and is not counted in the displayed repository size.
+The repository's model, `flare.onnx`, is unquantized `float32`: 6,928,896 parameters at 4 bytes each, no
+quantization operators in the graph, ~27.7 MB. If GitHub reports 133 bytes for `flare.onnx`, it is showing
+the Git LFS pointer file; the payload is stored in LFS and is not counted in the displayed repository size.
 
-Quantization was deliberately not applied to the distributed file. Dynamic or static `int8` quantization
-would shrink the weights roughly fourfold and `float16` conversion would halve the file, but each variant
-trades away the numerical parity this artifact is validated for: the maximum score deviation of 1.49e-7
-would no longer hold, and a static `int8` variant additionally requires a representative calibration set.
+`flare.onnx` is never rewritten. Quantized variants are distributed next to it rather than in place of it,
+because each one trades away the numerical parity the `float32` artifact is validated for: the maximum
+score deviation of 1.49e-7 does not hold for any of them, and a static `int8` variant would additionally
+require a representative calibration set.
+
 Load-time graph optimization, which costs nothing, is already active in ONNX Runtime via `ORT_ENABLE_ALL`.
 
 Optimized variants are therefore built and published as **separate files**, so the validated `float32`
 model stays available as the reference. This repository does that in CI rather than shipping opaque
 binaries: the [`Build quantized variants`](.github/workflows/quantize.yml) workflow produces `fp16`,
-`int8`, and `int4` builds from `flare.onnx`, replays all 40 reference spectra × 40 candidates through each
-one, and fails when a variant drifts too far from `flare.onnx` or from the original scores.
+`int8`, and `int4` builds from `flare.onnx` — plus the staged `fp32` copy — replays all 40 reference
+spectra × 40 candidates through each one, and fails when a variant drifts too far from `flare.onnx` or
+from the original scores.
 
 Measured on 40 spectra × 40 candidates on `ubuntu-latest` with ONNX Runtime 1.32:
 
