@@ -234,10 +234,20 @@ verifies them, and hands them out as workflow artifacts.
 
 | Variant | File | Recipe |
 |---|---|---|
-| `float32` | `flare.onnx` | The published reference model; never rewritten |
+| `float32` | `flare.onnx`, staged as `models/flare.fp32.onnx` | The published reference model; copied, never rewritten |
 | `fp16` | `models/flare.fp16.onnx` | `convert_float_to_float16(keep_io_types=True)`, so the graph runs in half precision while the four inputs and two outputs stay `float32` |
 | `int8` | `models/flare.int8.onnx` | `quantize_dynamic(..., weight_type=QInt8)` — dynamic per-channel weight quantization, no calibration set |
-| `int4` | `models/flare.int4.onnx` | `MatMul4BitsQuantizer(block_size=32, is_symmetric=True)` — weight-only 4-bit `MatMulNBits` for the dense layers |
+| `int4` | `models/flare.int4.onnx` | `MatMulNBitsQuantizer(bits=4, block_size=32, is_symmetric=True)` — weight-only 4-bit `MatMulNBits` for the dense layers |
+
+Two details of the `int4` recipe are worth knowing:
+
+- Only `MatMul` nodes with a constant right-hand side can be quantized, but PyTorch exports most linear
+  layers as `Gemm`. The pipeline therefore rewrites `Gemm` (`alpha = beta = 1`, no `transA`) into
+  `MatMul` + `Add`, with the weight initializer transposed on the host instead of adding a `Transpose`
+  node. Without that rewrite only the attention `MatMul`s qualify and the file shrinks by 4%; with it the
+  file drops from 27.75 MB to 4.44 MB.
+- `onnxruntime.quantization.matmul_nbits_quantizer` imports `onnx_ir`, which the `onnxruntime` wheel does
+  not depend on, so `requirements-quantize.txt` installs `onnx-ir` explicitly.
 
 Static `int8` quantization is intentionally absent: it needs a representative calibration set, and the
 40-spectrum reference fixture is too small to serve as one.
@@ -260,15 +270,43 @@ cannot pass:
 | `int8` | `8e-2` | 39 of 40 |
 | `int4` | `2e-1` | 38 of 40 |
 
+#### Measured results
+
+From the `main` build with ONNX Runtime 1.32.0 on `ubuntu-latest`, 40 spectra × 40 candidates:
+
+| Variant | Size | Share of `float32` | Max abs drift vs `float32` | Top-1 agreement | CPU time |
+|---|---|---|---|---|---|
+| `float32` | 27.75 MB | 100% | 0 (1.49e-07 vs original scores) | 40 of 40 | ~1.6–2.1 s |
+| `fp16` | 13.90 MB | 50% | 3.2e-04 | 40 of 40 | ~0.4–0.7 s |
+| `int8` | 7.06 MB | 25% | 2.7e-02 | 40 of 40 | ~0.3 s |
+| `int4` | 4.44 MB | 16% | 1.9e-01 | 39 of 40 | ~1.6 s |
+
+Readings:
+
+- `fp16` is numerically the safest variant and halves the file; the drift is three orders of magnitude
+  below the `int8` drift and it keeps every ranking.
+- `int8` dynamic quantization is the best trade-off here: a quarter of the size, four to five times
+  faster on CPU, and still 40 of 40 top-1.
+- `int4` is a size-first option. `MatMulNBits` dequantizes weights at run time, which on CPU costs more
+  than the bandwidth it saves, so it is the slowest quantized variant despite being the smallest, and it
+  loses one of 40 top-1 rankings. Prefer it only where the 4.4 MB file matters more than latency.
+- Timings are wall-clock for the 40-spectrum loop on a shared runner and vary by roughly ±30% between
+  runs; they are indicative, not a benchmark.
+
 The workflow runs on every change to `flare.onnx`, `scripts/`, or itself, and can be started manually with
-a custom variant list or 4-bit block size. Two outputs are published per run:
+a custom variant list or 4-bit block size. Every successful run publishes two outputs:
 
 - the `flare-quantized` artifact, which always contains the built models, `manifest.json`, and
-  `verification.json`;
-- the `quantized-v1` release assets, when the run is started manually with `publish_release` enabled.
+  `verification.json` (kept until GitHub expires the run's artifacts);
+- the assets of the [`quantized-v1`](https://github.com/Agredo/FLARE.onnx/releases/tag/quantized-v1)
+  release — `flare.fp32.onnx`, `flare.fp16.onnx`, `flare.int8.onnx`, `flare.int4.onnx`,
+  `manifest.json`, and `verification.json` — which are replaced on each successful build, so the release
+  always holds the current set. A variant whose validation failed is deleted from `models/` and never
+  uploaded.
 
 `flare.onnx` itself is only read: `manifest.json` records its SHA-256 next to the variants, so the
-provenance of every build is traceable. A variant is a convenience artifact for size- or latency-sensitive
+provenance of every build is traceable. `flare.fp32.onnx` is a byte-identical copy of it, kept so all four
+files can be fetched from one place. A variant is a convenience artifact for size- or latency-sensitive
 deployments; the validated `float32` file remains the reference. Measured results of each run are in the
 job summary of the workflow run.
 

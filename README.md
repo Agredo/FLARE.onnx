@@ -148,16 +148,25 @@ binaries: the [`Build quantized variants`](.github/workflows/quantize.yml) workf
 `int8`, and `int4` builds from `flare.onnx`, replays all 40 reference spectra × 40 candidates through each
 one, and fails when a variant drifts too far from `flare.onnx` or from the original scores.
 
-| Variant | Recipe | Maximum drift vs `flare.onnx` | Minimum top-1 agreement |
-|---|---|---|---|
-| `fp16` | `convert_float_to_float16(keep_io_types=True)` | `5e-3` | 40 of 40 |
-| `int8` | `quantize_dynamic(weight_type=QInt8)` | `8e-2` | 39 of 40 |
-| `int4` | `MatMul4BitsQuantizer(block_size=32)` | `2e-1` | 38 of 40 |
+Measured on 40 spectra × 40 candidates on `ubuntu-latest` with ONNX Runtime 1.32:
 
-The models are handed out as the `flare-quantized` workflow artifact (with `manifest.json` and
-`verification.json`) and, when a manual run enables `publish_release`, as assets of the `quantized-v1`
-release. `flare.onnx` is never rewritten; the manifest records its SHA-256 next to every variant. The full
-option matrix, the trade-offs, and the acceptance criteria are in
+| Variant | File | Size | Max abs drift vs `flare.onnx` | Top-1 agreement | CPU time |
+|---|---|---|---|---|---|
+| `float32` | `flare.fp32.onnx` | 27.75 MB | 0 (1.49e-07 vs original) | 40 of 40 | ~1.6–2.1 s |
+| `fp16` | `flare.fp16.onnx` | 13.90 MB | 3.2e-04 | 40 of 40 | ~0.4–0.7 s |
+| `int8` | `flare.int8.onnx` | 7.06 MB | 2.7e-02 | 40 of 40 | ~0.3 s |
+| `int4` | `flare.int4.onnx` | 4.44 MB | 1.9e-01 | 39 of 40 | ~1.6 s |
+
+`fp16` and `int8` are drop-in replacements, with `int8` both smallest-per-point and fastest. `int4` is
+weight-only (`MatMulNBits`) and buys size, not speed: on CPU the graph gains dequantization work per
+`MatMul`, so it is slower than `int8` and loses one top-1 ranking out of 40. Timings vary between runs on
+shared runners and are indicative only.
+
+Every run stores all four files as the `flare-quantized` workflow artifact (together with `manifest.json`
+and `verification.json`) and attaches them to the [`quantized-v1`](releases/tag/quantized-v1)
+release, whose assets are replaced on each successful build. `flare.fp32.onnx` is a byte-identical copy of
+`flare.onnx`; the model in the repository is never rewritten, and the manifest records its SHA-256 next to
+every variant. The full option matrix, the trade-offs, and the acceptance criteria are in
 [ONNX_MODEL.md → Variants built in CI](ONNX_MODEL.md#variants-built-in-ci) and
 [→ Size and optimization options](ONNX_MODEL.md#size-and-optimization-options).
 
