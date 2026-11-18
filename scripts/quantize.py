@@ -58,6 +58,39 @@ def _convert_fp16(module, function_name: str, model, label: str):
     return function(model, **kwargs), label
 
 
+def _toposort(model) -> int:
+    """Order the nodes so that every input is produced before it is used.
+
+    The float16 converter inserts cast nodes without reordering the graph, which the ONNX checker
+    rejects even though ONNX Runtime tolerates it. Returns the number of nodes that had to move.
+    """
+    graph = model.graph
+    available = {initializer.name for initializer in graph.initializer}
+    available.update(input_.name for input_ in graph.input)
+
+    ordered = []
+    pending = list(graph.node)
+    while pending:
+        ready = [node for node in pending if all(not name or name in available for name in node.input)]
+        if not ready:
+            ordered.extend(pending)
+            break
+        for node in ready:
+            available.update(node.output)
+        ordered.extend(ready)
+        blocked = {id(node) for node in ready}
+        pending = [node for node in pending if id(node) not in blocked]
+
+    original = [node.name for node in graph.node]
+    if [node.name for node in ordered] == original:
+        return 0
+
+    del graph.node[:]
+    graph.node.extend(ordered)
+    moved = sum(1 for before, after in zip(original, [node.name for node in ordered]) if before != after)
+    return max(moved, 1)
+
+
 def quantize_fp16(destination: Path, _block_size: int) -> str:
     model = onnx.load(str(SOURCE))
 
@@ -78,6 +111,7 @@ def quantize_fp16(destination: Path, _block_size: int) -> str:
             "onnxconverter_common convert_float_to_float16",
         )
 
+    _toposort(converted)
     onnx.save(converted, str(destination))
     return f"{recipe}(keep_io_types=True)"
 
@@ -246,6 +280,8 @@ def main() -> int:
             print(f"built {destination.name}: {size} bytes ({size / 1e6:.2f} MB)")
         except Exception as error:  # noqa: BLE001 - report and continue with the others
             traceback.print_exc()
+            if destination.exists():
+                destination.unlink()
             entries.append(
                 {
                     "variant": name,
