@@ -9,6 +9,8 @@ and how the artifact was verified.
 |---|---|
 | `flare.onnx` | The exported inference graph (~27.7 MB, stored with Git LFS) |
 | [ONNX_MODEL.md](ONNX_MODEL.md) | Provenance, validation, and the full tensor interface specification |
+| `scripts/` | Reproduction pipeline: golden-fixture download, input tensors, variant quantization, numerical verification |
+| [`.github/workflows/quantize.yml`](.github/workflows/quantize.yml) | CI job that builds and verifies the `fp16`, `int8`, and `int4` variants |
 
 The model is derived from the original research implementation, not retrained and not reimplemented:
 
@@ -110,16 +112,30 @@ The published artifact is unquantized `float32`: 6,928,896 parameters at 4 bytes
 operators in the graph, ~27.7 MB. If GitHub reports 133 bytes for `flare.onnx`, it is showing the Git LFS
 pointer file; the payload is stored in LFS and is not counted in the displayed repository size.
 
-Quantization was deliberately not applied. Dynamic or static `int8` quantization would shrink the weights
-roughly fourfold and `float16` conversion would halve the file, but each variant trades away the numerical
-parity this artifact is validated for: the maximum score deviation of 1.49e-7 would no longer hold, and a
-static `int8` variant additionally requires a representative calibration set. Load-time graph optimization,
-which costs nothing, is already active in ONNX Runtime via `ORT_ENABLE_ALL`.
+Quantization was deliberately not applied to the distributed file. Dynamic or static `int8` quantization
+would shrink the weights roughly fourfold and `float16` conversion would halve the file, but each variant
+trades away the numerical parity this artifact is validated for: the maximum score deviation of 1.49e-7
+would no longer hold, and a static `int8` variant additionally requires a representative calibration set.
+Load-time graph optimization, which costs nothing, is already active in ONNX Runtime via `ORT_ENABLE_ALL`.
 
-Any optimized variant should be published as a separate file so this validated `float32` model stays
-available as the reference, and it must be re-validated against the same reference data. The full option
-matrix, the trade-offs, and the acceptance criteria are in
-[ONNX_MODEL.md → Size and optimization options](ONNX_MODEL.md#size-and-optimization-options).
+Optimized variants are therefore built and published as **separate files**, so the validated `float32`
+model stays available as the reference. This repository does that in CI rather than shipping opaque
+binaries: the [`Build quantized variants`](.github/workflows/quantize.yml) workflow produces `fp16`,
+`int8`, and `int4` builds from `flare.onnx`, replays all 40 reference spectra × 40 candidates through each
+one, and fails when a variant drifts too far from `flare.onnx` or from the original scores.
+
+| Variant | Recipe | Maximum drift vs `flare.onnx` | Minimum top-1 agreement |
+|---|---|---|---|
+| `fp16` | `convert_float_to_float16(keep_io_types=True)` | `5e-3` | 40 of 40 |
+| `int8` | `quantize_dynamic(weight_type=QInt8)` | `8e-2` | 39 of 40 |
+| `int4` | `MatMul4BitsQuantizer(block_size=32)` | `2e-1` | 38 of 40 |
+
+The models are handed out as the `flare-quantized` workflow artifact (with `manifest.json` and
+`verification.json`) and, when a manual run enables `publish_release`, as assets of the `quantized-v1`
+release. `flare.onnx` is never rewritten; the manifest records its SHA-256 next to every variant. The full
+option matrix, the trade-offs, and the acceptance criteria are in
+[ONNX_MODEL.md → Variants built in CI](ONNX_MODEL.md#variants-built-in-ci) and
+[→ Size and optimization options](ONNX_MODEL.md#size-and-optimization-options).
 
 ## Using the model
 

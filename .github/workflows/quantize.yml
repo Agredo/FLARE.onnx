@@ -1,0 +1,83 @@
+name: Build quantized variants
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flare.onnx"
+      - "scripts/**"
+      - ".github/workflows/quantize.yml"
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: Comma-separated variants to build
+        required: true
+        default: fp16,int8,int4
+      block_size:
+        description: Block size for 4-bit weight quantization
+        required: true
+        default: "32"
+      publish_release:
+        description: Attach the built variants to the quantized-v1 release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: quantize-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  variants:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the model (Git LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toolchain
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy onnx onnxruntime onnxconverter-common
+          python -c "import onnx, onnxruntime, numpy; print(f'onnx {onnx.__version__}, onnxruntime {onnxruntime.__version__}, numpy {numpy.__version__}')"
+
+      - name: Fetch golden reference fixture
+        run: python scripts/fetch_reference.py
+
+      - name: Build variants
+        env:
+          VARIANTS: ${{ inputs.variants || 'fp16,int8,int4' }}
+          BLOCK_SIZE: ${{ inputs.block_size || '32' }}
+        run: python scripts/quantize.py --variants "$VARIANTS" --block-size "$BLOCK_SIZE"
+
+      - name: Verify against float32 and the original scores
+        run: python scripts/verify.py
+
+      - name: Upload variants
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flare-quantized
+          path: |
+            models/*.onnx
+            models/*.json
+          if-no-files-found: warn
+
+      - name: Publish release assets
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view quantized-v1 >/dev/null 2>&1 || \
+            gh release create quantized-v1 \
+              --title "Quantized variants" \
+              --notes "fp16, int8 and int4 builds of flare.onnx. Numerical parity against flare.onnx and the original PyTorch scores is recorded in the workflow run summary. These variants are convenience artifacts; flare.onnx remains the reference model."
+          gh release upload quantized-v1 models/*.onnx models/*.json --clobber

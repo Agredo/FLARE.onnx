@@ -203,7 +203,54 @@ model, not taken on trust:
 3. Publish it as a separate file (for example `flare.int8.onnx`) so the validated `float32` artifact stays
    available as the reference.
 
-A dynamic-quantized variant can be produced without touching the export, using the ONNX Runtime
+### Variants built in CI
+
+These requirements are implemented in this repository, so the variants can be reproduced and audited
+instead of trusted. Nothing is produced locally or committed as a model file: the
+[`Build quantized variants`](.github/workflows/quantize.yml) workflow builds the variants on a runner,
+verifies them, and hands them out as workflow artifacts.
+
+| Variant | File | Recipe |
+|---|---|---|
+| `float32` | `flare.onnx` | The published reference model; never rewritten |
+| `fp16` | `models/flare.fp16.onnx` | `convert_float_to_float16(keep_io_types=True)`, so the graph runs in half precision while the four inputs and two outputs stay `float32` |
+| `int8` | `models/flare.int8.onnx` | `quantize_dynamic(..., weight_type=QInt8)` — dynamic per-channel weight quantization, no calibration set |
+| `int4` | `models/flare.int4.onnx` | `MatMul4BitsQuantizer(block_size=32, is_symmetric=True)` — weight-only 4-bit `MatMulNBits` for the dense layers |
+
+Static `int8` quantization is intentionally absent: it needs a representative calibration set, and the
+40-spectrum reference fixture is too small to serve as one.
+
+The pipeline is four small scripts, all in this repository:
+
+| Script | Role |
+|---|---|
+| `scripts/fetch_reference.py` | Downloads the golden fixture from [Agredo/FLARE.Net](https://github.com/Agredo/FLARE.Net) at a pinned commit (`FLARE_NET_COMMIT` overrides it) |
+| `scripts/tensors.py` | Turns the fixture into the four input tensors; needs no chemistry toolkit because the fixture already contains the featurized peaks and molecules |
+| `scripts/quantize.py` | Builds the requested variants into `models/` and writes `models/manifest.json` with size and SHA-256 per file |
+| `scripts/verify.py` | Runs every variant over all 40 spectra × 40 candidates, compares against `flare.onnx` *and* the original scores, and writes `models/verification.json` |
+
+`verify.py` fails the run when a variant exceeds its gate, so a build that silently degrades the model
+cannot pass:
+
+| Variant | Maximum drift vs `flare.onnx` | Minimum top-1 agreement |
+|---|---|---|
+| `fp16` | `5e-3` | 40 of 40 |
+| `int8` | `8e-2` | 39 of 40 |
+| `int4` | `2e-1` | 38 of 40 |
+
+The workflow runs on every change to `flare.onnx`, `scripts/`, or itself, and can be started manually with
+a custom variant list or 4-bit block size. Two outputs are published per run:
+
+- the `flare-quantized` artifact, which always contains the built models, `manifest.json`, and
+  `verification.json`;
+- the `quantized-v1` release assets, when the run is started manually with `publish_release` enabled.
+
+`flare.onnx` itself is only read: `manifest.json` records its SHA-256 next to the variants, so the
+provenance of every build is traceable. A variant is a convenience artifact for size- or latency-sensitive
+deployments; the validated `float32` file remains the reference. Measured results of each run are in the
+job summary of the workflow run.
+
+A dynamic-quantized variant can also be produced by hand, without the workflow, using the ONNX Runtime
 quantization tools:
 
 ```python
