@@ -2,5 +2,8 @@
 # quantized variants (scripts/quantize.py, scripts/verify.py).
 numpy
 onnx
+# onnxruntime.quantization.matmul_nbits_quantizer imports onnx_ir, which the
+# onnxruntime wheel does not depend on itself.
+onnx-ir
 onnxruntime
 onnxconverter-common

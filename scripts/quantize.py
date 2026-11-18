@@ -90,9 +90,8 @@ def quantize_int8(destination: Path, _block_size: int) -> str:
 WEIGHT_ONLY_MODULES = (
     "onnxruntime.quantization.matmul_nbits_quantizer",
     "onnxruntime.quantization.matmul_4bits_quantizer",
-    "onnxruntime.quantization.matmul_bnb4_quantizer",
 )
-WEIGHT_ONLY_CLASSES = ("MatMulNBitsQuantizer", "MatMul4BitsQuantizer", "MatMulBnb4Quantizer")
+WEIGHT_ONLY_CLASSES = ("MatMulNBitsQuantizer", "MatMul4BitsQuantizer")
 
 
 def _load_weight_only_quantizer():
