@@ -129,6 +129,7 @@ def _rewrite_gemm_to_matmul(model) -> int:
 
     for node in graph.node:
         if node.op_type != "Gemm" or len(node.input) < 2:
+            replacements.append(node)
             continue
         attributes = {attribute.name: helper.get_attribute_value(attribute) for attribute in node.attribute}
         weight = initializers.get(node.input[1])
@@ -138,9 +139,11 @@ def _rewrite_gemm_to_matmul(model) -> int:
             or attributes.get("alpha", 1.0) != 1.0
             or attributes.get("beta", 1.0) != 1.0
         ):
+            replacements.append(node)
             continue
         array = numpy_helper.to_array(weight)
         if array.ndim != 2:
+            replacements.append(node)
             continue
         if attributes.get("transB", 0):
             array = array.T
@@ -228,6 +231,7 @@ def main() -> int:
         print(f"\n== {name} -> {destination.name}")
         try:
             recipe = BUILDERS[name](destination, args.block_size)
+            onnx.checker.check_model(onnx.load(str(destination)))
             size = destination.stat().st_size
             entries.append(
                 {

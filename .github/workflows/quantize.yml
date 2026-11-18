@@ -17,10 +17,6 @@ on:
         description: Block size for 4-bit weight quantization
         required: true
         default: "32"
-      publish_release:
-        description: Attach the built variants to the quantized-v1 release
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -61,6 +57,13 @@ jobs:
       - name: Verify against float32 and the original scores
         run: python scripts/verify.py
 
+      - name: Stage all four model files
+        if: always()
+        run: |
+          mkdir -p models
+          cp flare.onnx models/flare.fp32.onnx
+          ls -l models
+
       - name: Upload variants
         if: always()
         uses: actions/upload-artifact@v4
@@ -72,12 +75,12 @@ jobs:
           if-no-files-found: warn
 
       - name: Publish release assets
-        if: inputs.publish_release
+        if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view quantized-v1 >/dev/null 2>&1 || \
             gh release create quantized-v1 \
-              --title "Quantized variants" \
-              --notes "fp16, int8 and int4 builds of flare.onnx. Numerical parity against flare.onnx and the original PyTorch scores is recorded in the workflow run summary. These variants are convenience artifacts; flare.onnx remains the reference model."
+              --title "FLARE model files" \
+              --notes "The float32 model and the quantized variants built from it. \`flare.fp32.onnx\` is byte-identical to \`flare.onnx\` in the repository and remains the validated reference; the fp16, int8 and int4 builds are convenience artifacts. Sizes, SHA-256 hashes and the numerical verification against \`flare.fp32.onnx\` and the original PyTorch scores are in \`manifest.json\` and \`verification.json\`."
           gh release upload quantized-v1 models/*.onnx models/*.json --clobber
