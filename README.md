@@ -104,6 +104,23 @@ The residual score deviation is consistent with `float32` rounding accumulated t
 These are regression checks against the original implementation; they are not a benchmark of annotation
 accuracy, and execution-provider-specific behavior is not covered.
 
+## Model size and quantization
+
+The published artifact is unquantized `float32`: 6,928,896 parameters at 4 bytes each, no quantization
+operators in the graph, ~27.7 MB. If GitHub reports 133 bytes for `flare.onnx`, it is showing the Git LFS
+pointer file; the payload is stored in LFS and is not counted in the displayed repository size.
+
+Quantization was deliberately not applied. Dynamic or static `int8` quantization would shrink the weights
+roughly fourfold and `float16` conversion would halve the file, but each variant trades away the numerical
+parity this artifact is validated for: the maximum score deviation of 1.49e-7 would no longer hold, and a
+static `int8` variant additionally requires a representative calibration set. Load-time graph optimization,
+which costs nothing, is already active in ONNX Runtime via `ORT_ENABLE_ALL`.
+
+Any optimized variant should be published as a separate file so this validated `float32` model stays
+available as the reference, and it must be re-validated against the same reference data. The full option
+matrix, the trade-offs, and the acceptance criteria are in
+[ONNX_MODEL.md → Size and optimization options](ONNX_MODEL.md#size-and-optimization-options).
+
 ## Using the model
 
 ```python

@@ -165,6 +165,53 @@ was trained with. They are regression tests, not a benchmark of annotation accur
 fixture is not an independent evaluation of model quality. Execution-provider-specific behavior
 (for example, GPU providers) is not covered by these tests.
 
+## Size and optimization options
+
+The published artifact is an **unquantized `float32`** graph. Verified properties:
+
+- All 54 initializers are `float32`; 6,928,896 parameters × 4 bytes = 27,715,584 bytes of weights,
+  which matches the 27,746,037-byte file (the remainder is the graph, string tables, and protobuf framing).
+- The graph contains no quantization operators: `QuantizeLinear`, `DequantizeLinear`, `QLinearConv`,
+  `QLinearMatMul`, `DynamicQuantizeLinear`, `MatMulInteger`, and `ConvInteger` are all absent.
+
+Nothing here changed with the publication of this documentation: the artifact is byte-identical to
+the one validated above. When GitHub reports a much smaller size for `flare.onnx` (133 bytes), it is
+showing the Git LFS pointer file; the payload lives in LFS storage and is not counted in the displayed
+repository size.
+
+Several size and speed levers exist. None of them is applied to the published file, because each one
+trades numerical parity for size or latency.
+
+| Option | Effect | Cost / risk |
+|---|---|---|
+| **Dynamic int8 quantization** (weights int8, activations quantized per run) | Weights shrink ~4× (~7 MB total). No calibration data needed; `MatMul` becomes `MatMulInteger`/`DynamicQuantizeLinear`. | Introduces quantization error, so the current 1.49e-7 parity no longer holds. Speedup is modest for this graph, which is dominated by small per-molecule matmuls. |
+| **Static int8 quantization (PTQ)** | Best CPU speedups: weights *and* activations int8 via QDQ nodes with per-channel scales. | Needs a representative calibration set (spectra + candidate molecules) and a fresh accuracy check; calibration on an unrepresentative set can degrade ranking. |
+| **`float16` conversion** | Half the size (~14 MB) and faster math on fp16-capable hardware. | On CPU, fp16 usually requires cast nodes and can be *slower*; only worthwhile for GPU, DirectML, or NNAPI providers. |
+| **Weight-only 4-bit (`MatMulNBits`)** | ~3.5 MB. | Designed for very large matmuls; higher accuracy risk and needs a recent ONNX Runtime on every target. |
+| **Load-time graph optimization** | Constant folding, operator fusion, and layout optimization inside ONNX Runtime. No size change. | Free: ONNX Runtime enables `ORT_ENABLE_ALL` by default, so this is already active. |
+| **Node and initializer trimming** | Removes unused subgraphs. | Nothing to remove: the graph is a single inference path and every initializer is used. |
+| **Pruning or distillation** | Would shrink the network itself. | Requires retraining, which would no longer be an export of the published model. Out of scope. |
+| **Candidate chunking** (host side) | Bounds peak memory and the padding cost of `adj` (O(B·N²)); the reference host uses chunks of 64. | Already applied; it does not affect file size. |
+
+If a quantized variant is produced, it must be accepted against the same evidence used for the published
+model, not taken on trust:
+
+1. Re-run the reference comparison and report the new maximum score deviation. Quantized variants need
+   a looser tolerance (order `1e-2` rather than `1e-4`) and must keep the same top-ranked candidate.
+2. Confirm the variant loads and runs in ONNX Runtime on every target platform, since not every execution
+   provider supports every quantized operator.
+3. Publish it as a separate file (for example `flare.int8.onnx`) so the validated `float32` artifact stays
+   available as the reference.
+
+A dynamic-quantized variant can be produced without touching the export, using the ONNX Runtime
+quantization tools:
+
+```python
+from onnxruntime.quantization import QuantType, quantize_dynamic
+
+quantize_dynamic("flare.onnx", "flare.int8.onnx", weight_type=QuantType.QInt8)
+```
+
 ## Interface
 
 All tensors are `float32`. The dynamic dimensions are:
