@@ -1,0 +1,6 @@
+# Environment used by .github/workflows/quantize.yml to build and verify the
+# quantized variants (scripts/quantize.py, scripts/verify.py).
+numpy
+onnx
+onnxruntime
+onnxconverter-common

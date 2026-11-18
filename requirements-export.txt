@@ -1,0 +1,9 @@
+# Environment used to export flare.onnx (scripts/export_onnx.py).
+#
+# The ONNX artifact records producer_version 2.2.2, so the export was done with
+# PyTorch 2.2.2. For a CPU-only install use:
+#   pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
+numpy<2
+onnx
+onnxruntime

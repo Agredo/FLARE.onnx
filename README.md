@@ -9,7 +9,11 @@ and how the artifact was verified.
 |---|---|
 | `flare.onnx` | The exported inference graph (~27.7 MB, stored with Git LFS) |
 | [ONNX_MODEL.md](ONNX_MODEL.md) | Provenance, validation, and the full tensor interface specification |
-| `scripts/` | Reproduction pipeline: golden-fixture download, input tensors, variant quantization, numerical verification |
+| `scripts/model.py` | Pure-PyTorch re-implementation of the inference graph (no DGL, no Lightning) |
+| `scripts/export_onnx.py` | Exports `flare.onnx` from the checkpoint and verifies it against the reference data |
+| `scripts/make_reference.py` | Regenerates the golden reference data with the original DGL/dgllife pipeline |
+| `scripts/tensors.py`, `quantize.py`, `verify.py`, `fetch_reference.py` | Quantized-variant pipeline and numerical verification |
+| `requirements-export.txt`, `requirements-reference.txt`, `requirements-quantize.txt` | Python environments of the three workflows |
 | [`.github/workflows/quantize.yml`](.github/workflows/quantize.yml) | CI job that builds and verifies the `fp16`, `int8`, and `int4` variants |
 
 The model is derived from the original research implementation, not retrained and not reimplemented:
@@ -84,6 +88,26 @@ opset 17, 188 standard ONNX nodes, and 54 initializers holding 6,928,896 `float3
 
 The full procedure, the equivalent `torch.onnx.export` call, and the artifact properties are documented in
 [ONNX_MODEL.md → Provenance](ONNX_MODEL.md#provenance-how-the-model-was-exported).
+
+## Reproducing the export
+
+The export is scripted rather than manual. The checkpoint is the only input that has to be fetched by
+hand, because it is distributed by the original project:
+
+```bash
+python -m pip install -r requirements-export.txt
+mkdir -p pretrained_models     # put flare.ckpt from the Hugging Face Space here
+python scripts/export_onnx.py  # writes flare.onnx and verifies it
+```
+
+- `scripts/model.py` is the inference graph in pure PyTorch — spectrum encoder, GCN molecule encoder on a
+  dense adjacency matrix, and the FILIP head — with the checkpoint weights loaded unchanged.
+- `scripts/export_onnx.py` exports with `torch.onnx.export` at opset 17, runs `onnx.checker.check_model`,
+  and then compares both the PyTorch wrapper and the exported graph with the original scores, printing
+  `max |torch - original|`, `max |onnx - original|`, and the top-1 rate.
+- `scripts/make_reference.py` regenerates the golden reference data from the original DGL/dgllife
+  pipeline. It imports the research code, so it needs `FLARE_SRC` pointing at a checkout of that project
+  and the pinned environment in `requirements-reference.txt`.
 
 ## How the model was validated
 

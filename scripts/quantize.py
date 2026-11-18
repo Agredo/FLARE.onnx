@@ -87,22 +87,46 @@ def quantize_int8(destination: Path, _block_size: int) -> str:
     return "quantize_dynamic(weight_type=QInt8)"
 
 
+WEIGHT_ONLY_MODULES = (
+    "onnxruntime.quantization.matmul_nbits_quantizer",
+    "onnxruntime.quantization.matmul_4bits_quantizer",
+    "onnxruntime.quantization.matmul_bnb4_quantizer",
+)
+WEIGHT_ONLY_CLASSES = ("MatMulNBitsQuantizer", "MatMul4BitsQuantizer", "MatMulBnb4Quantizer")
+
+
+def _load_weight_only_quantizer():
+    """Locate the MatMul bits-quantizer; ONNX Runtime renamed it across releases."""
+    import importlib
+
+    attempts = []
+    for module_name in WEIGHT_ONLY_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as error:  # noqa: BLE001 - report every candidate
+            attempts.append(f"{module_name} ({type(error).__name__})")
+            continue
+        for class_name in WEIGHT_ONLY_CLASSES:
+            candidate = getattr(module, class_name, None)
+            if inspect.isclass(candidate):
+                return candidate, f"{module_name}.{class_name}"
+    raise ImportError("no MatMul weight-only quantizer found in onnxruntime; tried " + ", ".join(attempts))
+
+
 def quantize_int4(destination: Path, block_size: int) -> str:
-    from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
+    quantizer_class, fully_qualified = _load_weight_only_quantizer()
 
     model = onnx.load(str(SOURCE))
-    supported = inspect.signature(MatMul4BitsQuantizer.__init__).parameters
-    kwargs = {"block_size": block_size, "is_symmetric": True}
-    if "nodes_to_exclude" in supported:
-        kwargs["nodes_to_exclude"] = []
-    quantizer = MatMul4BitsQuantizer(model, **{k: v for k, v in kwargs.items() if k in supported})
+    supported = inspect.signature(quantizer_class.__init__).parameters
+    kwargs = {"bits": 4, "block_size": block_size, "is_symmetric": True, "nodes_to_exclude": []}
+    quantizer = quantizer_class(model, **{k: v for k, v in kwargs.items() if k in supported})
 
     if hasattr(quantizer, "process"):
         quantizer.process()
     elif hasattr(quantizer, "quantize"):
         quantizer.quantize()
     else:  # pragma: no cover - defensive
-        raise RuntimeError("MatMul4BitsQuantizer exposes neither process() nor quantize()")
+        raise RuntimeError(f"{fully_qualified} exposes neither process() nor quantize()")
 
     proto = None
     for attribute in ("model", "quantized_model"):
@@ -113,7 +137,7 @@ def quantize_int4(destination: Path, block_size: int) -> str:
         raise RuntimeError("Could not obtain a quantized ModelProto")
 
     onnx.save(proto, str(destination))
-    return f"MatMul4BitsQuantizer(block_size={block_size}, is_symmetric=True)"
+    return f"{fully_qualified.rsplit('.', 1)[-1]}(bits=4, block_size={block_size}, is_symmetric=True)"
 
 
 BUILDERS = {"fp16": quantize_fp16, "int8": quantize_int8, "int4": quantize_int4}

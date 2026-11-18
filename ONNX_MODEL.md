@@ -90,6 +90,28 @@ torch.onnx.export(
 Here `spec` is `[P, 15]`, `atoms` is `[B, N, 78]`, `adj` is `[B, N, N]`, and `atom_mask` is `[B, N]`;
 their contents are specified under [Interface](#interface).
 
+### Export and reference scripts
+
+The scripts that implement this procedure are part of this repository, so the artifact can be rebuilt
+instead of only being described:
+
+| Script | Role |
+|---|---|
+| `scripts/model.py` | The inference graph re-implemented in pure PyTorch, without DGL or Lightning; loads the checkpoint weights unchanged and reads the architecture from the checkpoint hyper-parameters |
+| `scripts/export_onnx.py` | Wraps the model, calls `torch.onnx.export`, runs `onnx.checker.check_model`, and replays the reference data through the exported file |
+| `scripts/make_reference.py` | Regenerates the golden reference data with the original DGL/dgllife pipeline; needs a checkout of the research code (`FLARE_SRC`) |
+| `scripts/tensors.py`, `scripts/verify.py`, `scripts/quantize.py` | Build the model inputs from that data and check the float32 and quantized artifacts (see [Variants built in CI](#variants-built-in-ci)) |
+
+```bash
+python -m pip install -r requirements-export.txt
+# download pretrained_models/flare.ckpt from the Hugging Face Space into ./pretrained_models/
+python scripts/export_onnx.py                          # rewrites flare.onnx and verifies it
+python scripts/make_reference.py --n 40                # optional, needs FLARE_SRC + requirements-reference.txt
+```
+
+`export_onnx.py` ends with the comparison against the original scores; it raises `verification FAILED`
+when either the PyTorch wrapper or the exported graph deviates by more than `--tol` (default `1e-4`).
+
 ### Artifact facts
 
 The following properties describe the checked-in file and can be verified with any ONNX parser:

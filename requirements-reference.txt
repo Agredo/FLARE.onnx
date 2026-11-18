@@ -1,0 +1,22 @@
+# Environment used to regenerate the golden reference data (scripts/make_reference.py).
+#
+# These are the versions of the original FLARE pipeline that produced
+# reference/reference.json; they pin the numerical behaviour of the golden data.
+torch==2.2.2
+dgl==2.2.1
+dgllife==0.3.2
+rdkit==2025.9.3
+numpy<2
+torchdata==0.7.1
+torch_geometric
+pydantic
+matchms<0.29
+pandas<2.3
+scikit-learn<1.6
+matplotlib
+pulp
+torchmetrics
+pathos
+pytorch-lightning<2.5
+onnx
+onnxruntime
